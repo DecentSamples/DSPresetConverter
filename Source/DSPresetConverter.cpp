@@ -886,13 +886,20 @@ bool DSPresetConverter::copySamplesOverToNewDirectory(juce::File rootOutputDirec
                 outputBuffer.copyFrom (channel, index, buffer, channel, loopStart, chunk2Length);
                 index += chunk2Length;
                 
-               // Perform the crossfade
+               // Perform the crossfade, matching DSWavePlayer::getSample's live-playback crossfade:
+               // fade-out reads the loop's true tail (ending at loopEnd), fade-in reads the material
+               // immediately preceding loopStart, and the curve shape respects loopCrossfadeMode.
                for (int i = 0; i < loopCrossfade; ++i)
                {
-                   float fadeOut = std::cos ((float)i / loopCrossfade * juce::MathConstants<float>::halfPi);
-                   float fadeIn = std::sin ((float)i / loopCrossfade * juce::MathConstants<float>::halfPi);
+                   float t = (float) i / (float) loopCrossfade;
+                   float fadeOut = 1.0f - t;
+                   float fadeIn = t;
+                   if(loopCrossfadeMode != "linear") {
+                       fadeOut = std::cos (t * juce::MathConstants<float>::halfPi);
+                       fadeIn = std::sin (t * juce::MathConstants<float>::halfPi);
+                   }
                    
-                   float sampleToFadeOut = buffer.getSample (channel, (loopEnd - loopCrossfade) + i);
+                   float sampleToFadeOut = buffer.getSample (channel, (loopEnd - loopCrossfade + 1) + i);
                    float sampleToFadeIn = buffer.getSample (channel, (loopStart - loopCrossfade) + i);
                    
                    outputBuffer.setSample (channel, index + i,
