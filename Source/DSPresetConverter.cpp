@@ -9,6 +9,7 @@
 */
 
 #include "DSPresetConverter.h"
+#include "../../../DSHelpers.h"
 
  DSPresetConverter::DSPresetConverter() {
      audioFormatManager.registerBasicFormats();
@@ -345,57 +346,9 @@ void DSPresetConverter::translateSFZRegionProperties(juce::ValueTree sfzRegion, 
 }
 
 void DSPresetConverter::addGenericUI() {
-    juce::String effectsXML = "<effects> \
-      <effect type=\"lowpass\" frequency=\"22000.0\"/>\
-          <effect type=\"chorus\"  mix=\"0.0\" modDepth=\"0.2\" modRate=\"0.2\" />\
-          <effect type=\"reverb\" wetLevel=\"0.5\"/>\
-        </effects>";
-    
-    valueTree.appendChild(juce::ValueTree::fromXml(effectsXML), nullptr);
-    
-    juce::String uiXML = "<ui width=\"812\" height=\"375\" bgImage=\"Images/background.jpg\">\
-        <tab name=\"main\">\
-          <labeled-knob x=\"255\" y=\"80\" width=\"100\" textSize=\"16\" textColor=\"AA000000\"\
-                        trackForegroundColor=\"CC000000\" trackBackgroundColor=\"66999999\"\
-                        label=\"Attack\" type=\"float\" minValue=\"0.0\" maxValue=\"5\" value=\"0.2\" >\
-            <binding type=\"amp\" level=\"instrument\" position=\"0\" parameter=\"ENV_ATTACK\" />\
-          </labeled-knob>\
-          <labeled-knob x=\"330\" y=\"80\" width=\"100\" textSize=\"16\" textColor=\"AA000000\"\
-                        trackForegroundColor=\"CC000000\" trackBackgroundColor=\"66999999\"\
-                        label=\"Decay\" type=\"float\" minValue=\"0.0\" maxValue=\"5\" value=\"1\" >\
-            <binding type=\"amp\" level=\"instrument\" position=\"0\" parameter=\"ENV_DECAY\" />\
-          </labeled-knob>\
-          <labeled-knob x=\"405\" y=\"80\" width=\"100\" textSize=\"16\" textColor=\"AA000000\"\
-                        trackForegroundColor=\"CC000000\" trackBackgroundColor=\"66999999\"\
-                        label=\"Sustain\" type=\"float\" minValue=\"0.0\" maxValue=\"1\" value=\"1\" >\
-            <binding type=\"amp\" level=\"instrument\" position=\"0\" parameter=\"ENV_SUSTAIN\" />\
-          </labeled-knob>\
-          <labeled-knob x=\"480\" y=\"80\" width=\"100\" textSize=\"16\" textColor=\"AA000000\"\
-                        trackForegroundColor=\"CC000000\" trackBackgroundColor=\"66999999\"\
-                        label=\"Release\" type=\"float\" minValue=\"0.01\" maxValue=\"4.0\" value=\"0.1\" >\
-            <binding type=\"amp\" level=\"instrument\" position=\"0\" parameter=\"ENV_RELEASE\" />\
-          </labeled-knob>\
-          <labeled-knob x=\"562\" y=\"80\" width=\"100\" textSize=\"16\" textColor=\"AA000000\"\
-                        trackForegroundColor=\"CC000000\" trackBackgroundColor=\"66999999\"\
-                        label=\"Chorus\" type=\"float\" minValue=\"0.0\" maxValue=\"1\" value=\"0\" >\
-            <binding type=\"effect\" level=\"instrument\" position=\"1\" parameter=\"FX_MIX\" />\
-          </labeled-knob>\
-          <labeled-knob x=\"635\" y=\"80\" width=\"100\" textSize=\"16\" textColor=\"AA000000\"\
-                        trackForegroundColor=\"CC000000\" trackBackgroundColor=\"66999999\"\
-                        label=\"Tone\" type=\"float\" minValue=\"0.5\" maxValue=\"1\" value=\"1\">\
-            <binding type=\"effect\" level=\"instrument\" position=\"0\" parameter=\"FX_FILTER_FREQUENCY\" translation=\"table\" translationTable=\"0,33;0.3,150;0.4,450;0.5,1100;0.7,4100;0.9,11000;1.0001,22000\"/>\
-          </labeled-knob>\
-          <labeled-knob x=\"710\" y=\"80\" width=\"100\" textSize=\"16\" textColor=\"AA000000\" trackForegroundColor=\"CC000000\" trackBackgroundColor=\"66999999\"\
-                        label=\"Reverb\" type=\"percent\" minValue=\"0\" maxValue=\"100\"\
-                        textColor=\"CC000000\" value=\"50\">\
-            <binding type=\"effect\" level=\"instrument\" position=\"2\"\
-                     parameter=\"FX_REVERB_WET_LEVEL\" translation=\"linear\"\
-                     translationOutputMin=\"0\" translationOutputMax=\"1\" />\
-          </labeled-knob>\
-        </tab>\
-      </ui>";
-    
-    valueTree.appendChild(juce::ValueTree::fromXml(uiXML), nullptr);
+    // Shared with the Preset Editor's own "Add Standard Controls & Effects..." command - see
+    // DSHelpers.cpp for the actual XML, kept in one place rather than two copies.
+    addStandardControlsAndEffects(valueTree, nullptr);
 }
 
 // Convert the current internal valueTree, which is in a basic DecentSampler format, into an SFZ file
