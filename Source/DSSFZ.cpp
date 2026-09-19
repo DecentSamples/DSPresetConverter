@@ -10,180 +10,111 @@
 
 #include "DSSFZ.h"
 
-void DSSFZ::skipComment() {
-    while(position < fileString.length()) {
-        if(position+1 >= fileString.length()) {
-            return;
-        }
-        
-        if(fileString[position] != '/' || fileString[position+1] != '/') {
-            return;
-        }
-        
-        while(position < fileString.length()) {
-            juce::juce_wchar thisChar = fileString[position];
-            if(thisChar == '\r' || thisChar == '\n' ) {
-                break;
+// Comments are stripped before anything is tokenised: "//" to the end of the line, and
+// "/* ... */" blocks, which may span lines (VCSL comments out whole regions that way).
+// Neither has any meaning inside an SFZ value, so this cannot damage one (0000479).
+juce::String DSSFZ::stripComments(const juce::String &text) {
+    juce::String out;
+    out.preallocateBytes(text.getNumBytesAsUTF8());
+    const int length = text.length();
+    for (int i = 0; i < length; ) {
+        const juce::juce_wchar c = text[i];
+        const juce::juce_wchar next = (i + 1 < length) ? text[i + 1] : 0;
+        if (c == '/' && next == '/') {
+            while (i < length && text[i] != '\n' && text[i] != '\r') i++;
+        } else if (c == '/' && next == '*') {
+            i += 2;
+            while (i < length && !(text[i] == '*' && i + 1 < length && text[i + 1] == '/')) {
+                if (text[i] == '\n') out << '\n'; // keep line structure for #include and friends
+                i++;
             }
-            position++;
+            i += 2;
+        } else {
+            out << c;
+            i++;
         }
-        
-        skipNewLines(true);
     }
-}
-
-void DSSFZ::skipNewLines(bool andSpaces) {
-    for (; position < fileString.length(); position++) {
-        wchar_t curChar = fileString[position];
-        if((andSpaces && curChar == ' ') || curChar == '\r' || curChar == '\n' ) {
-            continue;
-        }
-        break;
-    }
+    return out;
 }
 
 void DSSFZ::parseFromFile(juce::File file) {
     valueTree = juce::ValueTree("sfz");
-    
+    currentSection = UNKNOWN;
+    currentGroup = juce::ValueTree();
+    currentRegion = juce::ValueTree();
+
     std::unique_ptr<juce::FileInputStream> inputStream = file.createInputStream();
-    
-    fileString = inputStream->readEntireStreamAsString();
-    
-    juce::String tokenString = {};
-    enum token_type_t { HEADER, OPCODE };
-    token_type_t tokenType = HEADER;
-    
-    for (position = 0; position < fileString.length(); position++) {
-        juce::juce_wchar curChar = fileString[position];
-        
-        skipNewLines(true);
-        skipComment();
-        
-        if(position >= fileString.length()) { return; }
-        
-        juce::String token;
-        
-        curChar = fileString[position];
-        switch(curChar) {
-            case '<':
-                if(tokenString.isNotEmpty()) {
-                    switch (tokenType)
-                    {
-                    case HEADER:
-                        pushHeader(tokenString.trim());
-                        break;
-                    case OPCODE:
-                        pushOpcode(tokenString.trim());
-                        break;
-                    }
-                    tokenString.clear();
-                }
-                
-                // Get the entire next token
-                for (; position < fileString.length(); position++) {
-                    curChar = fileString[position];
-                    if(curChar == '>') {
-                        token << curChar;
-                        break;
-                    }
-                    
-                    if(curChar == '\r' || curChar == '\n') {
-                        break;
-                    }
-                    token << curChar;
-                    
-                }
-                // process the header token
-                tokenString = tokenString + token;
-                tokenType = HEADER;
-                break;
-            default:
-                if (tokenString.isNotEmpty())
-                {
-                    switch (tokenType) {
-                        case HEADER:
-                            pushHeader(tokenString.trim());
-                            break;
-                        case OPCODE:
-                            pushOpcode(tokenString.trim());
-                            break;
-                    }
-                    tokenString.clear();
-                }
-                
-                // Get the entire next opcode
-                juce::String opcodeString = {};
-                for (; position < fileString.length(); position++) {
-                    curChar = fileString[position];
-                    if(curChar == '<' /*|| curChar == '\r' || curChar == '\n'*/) {
-                        position--;
-                        break;
-                    }
-                    opcodeString << curChar;
-                }
-                
-                if(opcodeString.indexOf("=") == -1) {
-                    DBG("Opcode is missing an '=' in it: " + opcodeString);
-                    break;
-                }
-                
-                juce::StringArray opcodeStringTokens; opcodeStringTokens.addTokens(opcodeString, "=", "");
-                
-                if (opcodeStringTokens.size() <= 2) {
-                    token = opcodeString;
-                } else if(opcodeStringTokens.size() >= 2){
-                    juce::String key = opcodeStringTokens[0];
-                    int lastSpace = opcodeStringTokens[1].lastIndexOfChar(' ');
-                    int lastNNewLineChar = opcodeStringTokens[1].lastIndexOfChar('\n');
-                    int lastRNewlineChar = opcodeStringTokens[1].lastIndexOfChar('\r');
-                    
-                    
-                    auto chooseFirstViableIndex = [](int num1, int num2){
-                        if(num1 == -1) return num2;
-                        if(num2 == -1) return num1;
-                        return juce::jmin(num1, num2);
-                    };
-                    
-                    int endOfValue = lastSpace;
-                    endOfValue = chooseFirstViableIndex(endOfValue, lastNNewLineChar);
-                    endOfValue = chooseFirstViableIndex(endOfValue, lastRNewlineChar);
-                    
-                    if(endOfValue < 1) {
-                        fprintf(stderr, "ERROR: Unable to determine the end of the opcode's value.\n");
-                        break;
-                    }
-                    
-                    juce::String value = opcodeStringTokens[1].substring(0, endOfValue);
-                    token = key + "=" + value;
-                }
-                
-                // process the header token
-                tokenString = tokenString + token;
-                tokenType = OPCODE;
-                position = position - opcodeString.length() + token.length();
-                break;
-        }
+    if (inputStream == nullptr) {
+        return;
     }
-    
-    if (!tokenString.isEmpty())
-    {
-        switch (tokenType)
-        {
-        case HEADER:
-            pushHeader(tokenString.trim());
-            break;
-        case OPCODE:
-            pushOpcode(tokenString.trim());
-            break;
+    fileString = stripComments(inputStream->readEntireStreamAsString());
+
+    // Tokens are headers ("<region>") and words. An opcode is a word containing "=", and
+    // its value runs to the next opcode or header, so "sample=My Sample.wav lokey=36" gives
+    // sample its two words back. This is how every other SFZ player reads a value with
+    // spaces in it; the previous scanner guessed the value ended at its last space, which
+    // worked for that case and fell apart around comments and several opcodes on a line.
+    juce::String opcodeKey, opcodeValue;
+    auto flushOpcode = [&]() {
+        if (opcodeKey.isNotEmpty()) {
+            pushOpcode(opcodeKey + "=" + opcodeValue.trim());
         }
-        tokenString.clear();
+        opcodeKey.clear();
+        opcodeValue.clear();
+    };
+
+    juce::StringArray lines;
+    lines.addLines(fileString);
+    for (const juce::String &rawLine : lines) {
+        const juce::String line = rawLine.trim();
+        if (line.startsWithChar('#')) {
+            // #include / #define are SFZ v2 directives this importer does not follow.
+            std::cerr << "SFZ2DS: skipping directive '" << line << "'" << std::endl;
+            continue;
+        }
+        const int length = line.length();
+        for (int i = 0; i < length; ) {
+            const juce::juce_wchar c = line[i];
+            if (juce::CharacterFunctions::isWhitespace(c)) { i++; continue; }
+            if (c == '<') {
+                const int close = line.indexOfChar(i, '>');
+                if (close < 0) { i = length; break; }
+                flushOpcode();
+                pushHeader(line.substring(i, close + 1).trim());
+                i = close + 1;
+                continue;
+            }
+            int wordEnd = i;
+            while (wordEnd < length && !juce::CharacterFunctions::isWhitespace(line[wordEnd]) && line[wordEnd] != '<') wordEnd++;
+            const juce::String word = line.substring(i, wordEnd);
+            i = wordEnd;
+            const int equals = word.indexOfChar('=');
+            if (equals > 0) {
+                flushOpcode();
+                opcodeKey = word.substring(0, equals);
+                opcodeValue = word.substring(equals + 1);
+            } else if (opcodeKey.isNotEmpty()) {
+                opcodeValue << ' ' << word;      // continuation of a value containing spaces
+            } else {
+                std::cerr << "SFZ2DS: ignoring '" << word << "', which is not an opcode" << std::endl;
+            }
+        }
+        // A value never continues onto the next line.
+        flushOpcode();
     }
+    flushOpcode();
 }
 
 void DSSFZ::pushHeader(juce::String token) {
+    token = token.toLowerCase();
     if (token == "<global>")
     {
         currentSection = GLOBAL;
+    } else if (token == "<control>")
+    {
+        // Holds default_path (and #define-style things this importer ignores). Kept on the
+        // root so the converter can prefix sample paths with it.
+        currentSection = CONTROL;
     } else if (token == "<group>")
     {
         currentSection = GROUP;
@@ -221,6 +152,10 @@ void DSSFZ::pushOpcode(juce::String token) {
     
     if(currentSection == GLOBAL) {
         valueTree.setProperty(key, value, nullptr);
+    } else if(currentSection == CONTROL) {
+        if (key == "default_path") {
+            valueTree.setProperty("default_path", value, nullptr);
+        }
     } else if (currentSection == GROUP) {
         currentGroup.setProperty(key, value, nullptr);
     } else if (currentSection == REGION) {

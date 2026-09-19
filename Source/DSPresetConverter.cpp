@@ -158,6 +158,72 @@ void DSPresetConverter::parseDSEXS24(DSEXS24 exs24) {
     
 }
 
+// SFZ key opcodes take either a MIDI number or a note name, "c-1" to "g9" with "#" or "b",
+// in either case (0000479). Middle C is c4 = 60. Returns the input untouched when it is not
+// a note name, so a number passes straight through.
+static juce::var sfzKeyValue(const juce::var &value) {
+    const juce::String text = value.toString().trim().toLowerCase();
+    if (text.isEmpty() || juce::CharacterFunctions::isDigit(text[0]) || text[0] == '-') {
+        return value;
+    }
+    static const juce::String letters = "c d e f g a b";
+    const int letterIndex = letters.indexOfChar(text[0]);
+    if (letterIndex < 0) {
+        return value;
+    }
+    static const int semitones[] = { 0, 0, 2, 0, 4, 0, 5, 0, 7, 0, 9, 0, 11 };
+    int note = semitones[letterIndex];
+    int i = 1;
+    if (i < text.length() && text[i] == '#') { note++; i++; }
+    else if (i < text.length() && text[i] == 'b') { note--; i++; }
+    const juce::String octaveText = text.substring(i);
+    if (octaveText.isEmpty() || !octaveText.containsOnly("-0123456789") || octaveText == "-") {
+        return value;
+    }
+    const int octave = octaveText.getIntValue();
+    return juce::var(juce::jlimit(0, 127, (octave + 1) * 12 + note));
+}
+
+// Regions that share a key and velocity range and carry lorand/hirand are one random round
+// robin: each lands in its own position, in order of lorand, over a sequence as long as the
+// set (0000479). The SFZ ranges themselves are dropped, since DecentSampler picks uniformly.
+static void translateSFZRandomRoundRobins(juce::ValueTree &dsGroup) {
+    juce::Array<juce::ValueTree> candidates;
+    for (auto sample : dsGroup) {
+        if (sample.hasProperty("_lorand") || sample.hasProperty("_hirand")) {
+            candidates.add(sample);
+        }
+    }
+    while (!candidates.isEmpty()) {
+        juce::ValueTree first = candidates.getFirst();
+        auto sameZone = [&first](const juce::ValueTree &other) {
+            for (const char* key : { "loNote", "hiNote", "rootNote", "loVel", "hiVel" }) {
+                if (first.getProperty(key).toString() != other.getProperty(key).toString()) return false;
+            }
+            return true;
+        };
+        juce::Array<juce::ValueTree> zone;
+        for (int i = candidates.size(); --i >= 0;) {
+            if (sameZone(candidates.getReference(i))) {
+                zone.add(candidates.getReference(i));
+                candidates.remove(i);
+            }
+        }
+        std::sort(zone.begin(), zone.end(), [](const juce::ValueTree &a, const juce::ValueTree &b) {
+            return (double) a.getProperty("_lorand", 0.0) < (double) b.getProperty("_lorand", 0.0);
+        });
+        for (int i = 0; i < zone.size(); i++) {
+            zone.getReference(i).setProperty("seqMode", "random", nullptr);
+            zone.getReference(i).setProperty("seqPosition", i + 1, nullptr);
+            zone.getReference(i).setProperty("seqLength", zone.size(), nullptr);
+        }
+    }
+    for (auto sample : dsGroup) {
+        sample.removeProperty("_lorand", nullptr);
+        sample.removeProperty("_hirand", nullptr);
+    }
+}
+
 void DSPresetConverter::parseSFZValueTree(juce::ValueTree sfz) {
     valueTree = juce::ValueTree("DecentSampler");
     
@@ -167,6 +233,12 @@ void DSPresetConverter::parseSFZValueTree(juce::ValueTree sfz) {
     juce::ValueTree groupsVT = juce::ValueTree("groups");
     translateSFZRegionProperties(sfz, groupsVT, headerLevelGlobal);
     valueTree.appendChild(groupsVT, nullptr);
+
+    // <control> default_path prefixes every sample path (0000479).
+    juce::String defaultPath = sfz.getProperty("default_path", "").toString().replaceCharacter('\\', '/');
+    if (defaultPath.isNotEmpty() && !defaultPath.endsWithChar('/')) {
+        defaultPath << '/';
+    }
     
     for (auto sfzSection : sfz) {
         if(sfzSection.hasType("group")) {
@@ -175,8 +247,15 @@ void DSPresetConverter::parseSFZValueTree(juce::ValueTree sfz) {
             for (auto sfzRegion : sfzSection) {
                 juce::ValueTree dsSample("sample");
                 translateSFZRegionProperties(sfzRegion, dsSample, headerLevelRegion);
+                if (defaultPath.isNotEmpty() && dsSample.hasProperty("path")) {
+                    juce::String path = dsSample.getProperty("path").toString().replaceCharacter('\\', '/');
+                    if (!juce::File::isAbsolutePath(path)) {
+                        dsSample.setProperty("path", defaultPath + path, nullptr);
+                    }
+                }
                 dsGroup.appendChild(dsSample, nullptr);
             }
+            translateSFZRandomRoundRobins(dsGroup);
             groupsVT.appendChild(dsGroup, nullptr);
         }
     }
@@ -285,21 +364,27 @@ void DSPresetConverter::translateSFZRegionProperties(juce::ValueTree sfzRegion, 
         } else if(key == "end") {
             dsEntity.setProperty("end", value, nullptr);
         } else if(key == "hikey") {
-            dsEntity.setProperty("hiNote", value, nullptr);
+            dsEntity.setProperty("hiNote", sfzKeyValue(value), nullptr);
         } else if(key == "hivel") {
             dsEntity.setProperty("hiVel", value, nullptr);
         } else if(key == "key") {
-            dsEntity.setProperty("rootNote", value, nullptr);
-            dsEntity.setProperty("loNote", value, nullptr);
-            dsEntity.setProperty("hiNote", value, nullptr);
+            dsEntity.setProperty("rootNote", sfzKeyValue(value), nullptr);
+            dsEntity.setProperty("loNote", sfzKeyValue(value), nullptr);
+            dsEntity.setProperty("hiNote", sfzKeyValue(value), nullptr);
         } else if(key == "lokey") {
-            dsEntity.setProperty("loNote", value, nullptr);
+            dsEntity.setProperty("loNote", sfzKeyValue(value), nullptr);
+        } else if(key == "lorand") {
+            dsEntity.setProperty("_lorand", (double) value, nullptr);
+        } else if(key == "hirand") {
+            dsEntity.setProperty("_hirand", (double) value, nullptr);
         } else if(key == "loop_end") {
             dsEntity.setProperty("loopEnd", value, nullptr);
         } else if(key == "loop_mode") {
-            if(value == "loop_continuous") {
-                dsEntity.setProperty("loopEnabled", (value == "loop_continuous") ? "true" : "false", nullptr);
-            }
+            // Set explicitly either way: loop points with loop_mode=no_loop used to come
+            // through as loopStart/loopEnd alone, which the engine treats as a loop (0000479).
+            const juce::String mode = value.toString().trim().toLowerCase();
+            const bool loops = (mode == "loop_continuous" || mode == "loop_sustain");
+            dsEntity.setProperty("loopEnabled", loops ? "true" : "false", nullptr);
         } else if(key == "loop_start") {
             dsEntity.setProperty("loopStart", value, nullptr);
         } else if(key == "lovel") {
@@ -311,7 +396,7 @@ void DSPresetConverter::translateSFZRegionProperties(juce::ValueTree sfzRegion, 
         } else if(key == "offset") {
             dsEntity.setProperty("start", value, nullptr);
         } else if(key == "pitch_keycenter") {
-            dsEntity.setProperty("rootNote", value, nullptr);
+            dsEntity.setProperty("rootNote", sfzKeyValue(value), nullptr);
         } else if(key == "sample") {
             dsEntity.setProperty("path", value, nullptr);
         } else if(key == "seq_position") {
@@ -321,7 +406,7 @@ void DSPresetConverter::translateSFZRegionProperties(juce::ValueTree sfzRegion, 
             dsEntity.setProperty("seqLength", value, nullptr);
             dsEntity.setProperty("seqMode", "round_robin", nullptr);
         } else if(key == "sw_previous") {
-            dsEntity.setProperty("previousNote", value, nullptr);
+            dsEntity.setProperty("previousNote", sfzKeyValue(value), nullptr);
         } else if(key == "trigger") {
             dsEntity.setProperty("trigger", value, nullptr);
         } else if(key == "tune") {
