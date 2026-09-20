@@ -22,13 +22,12 @@ private:
     juce::ValueTree currentGroup;
     juce::ValueTree currentRegion;
     juce::String fileString;
-    int position;
+
     
-    enum sectionType { UNKNOWN, GROUP, REGION, GLOBAL };
-    sectionType currentSection;
+    enum sectionType { UNKNOWN, GROUP, REGION, GLOBAL, CONTROL };
+    sectionType currentSection = UNKNOWN;
     
     void pushHeader(juce::String);
     void pushOpcode(juce::String);
-    void skipNewLines(bool andSpaces);
-    void skipComment();
+    static juce::String stripComments(const juce::String &text);
 };
