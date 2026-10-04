@@ -40,8 +40,11 @@ juce::String DSSFZ::stripComments(const juce::String &text) {
 void DSSFZ::parseFromFile(juce::File file) {
     valueTree = juce::ValueTree("sfz");
     currentSection = UNKNOWN;
+    currentMaster = juce::ValueTree();
     currentGroup = juce::ValueTree();
     currentRegion = juce::ValueTree();
+    currentCurve = juce::ValueTree();
+    curveUsers.clear();
 
     std::unique_ptr<juce::FileInputStream> inputStream = file.createInputStream();
     if (inputStream == nullptr) {
@@ -103,6 +106,38 @@ void DSSFZ::parseFromFile(juce::File file) {
         flushOpcode();
     }
     flushOpcode();
+    reportCurves();
+}
+
+// A group starts out with its <master>'s opcodes, so they reach every region below it the way
+// SFZ inherits them (global -> master -> group -> region), and the group's own opcodes,
+// applied afterwards, override them. DecentSampler has no level between <groups> and <group>,
+// so this is where a master's settings have to live.
+void DSSFZ::startGroup() {
+    currentGroup = juce::ValueTree("group");
+    if (currentMaster.isValid()) {
+        currentGroup.copyPropertiesFrom(currentMaster, nullptr);
+    }
+    valueTree.appendChild(currentGroup, nullptr);
+}
+
+// <curve> only shapes MIDI CC modulation (the *_curveccN opcodes), and no CC modulation is
+// imported: DecentSampler's CC sources start at 0 with no per-preset default, so an imported
+// amplitude_oncc7 or pan_oncc10 would leave the instrument silent or panned hard until the
+// controller moved. Say exactly what is being dropped rather than just "unsupported".
+void DSSFZ::reportCurves() {
+    for (auto curve : valueTree) {
+        if (!curve.hasType("curve")) continue;
+        const int index = curve.getProperty("curve_index", -1);
+        auto users = curveUsers.find(index);
+        if (users != curveUsers.end()) {
+            std::cerr << "SFZ2DS: <curve> " << index << " ignored: it shapes "
+                      << users->second.joinIntoString(", ")
+                      << ", and MIDI CC modulation is not imported" << std::endl;
+        } else {
+            std::cerr << "SFZ2DS: <curve> " << index << " ignored: no opcode uses it" << std::endl;
+        }
+    }
 }
 
 void DSSFZ::pushHeader(juce::String token) {
@@ -115,20 +150,33 @@ void DSSFZ::pushHeader(juce::String token) {
         // Holds default_path (and #define-style things this importer ignores). Kept on the
         // root so the converter can prefix sample paths with it.
         currentSection = CONTROL;
+    } else if (token == "<master>")
+    {
+        // A new master replaces the previous one and ends its group, so a region that comes
+        // straight after it gets a group of its own carrying this master's opcodes.
+        currentSection = MASTER;
+        currentMaster = juce::ValueTree("master");
+        currentGroup = juce::ValueTree();
     } else if (token == "<group>")
     {
         currentSection = GROUP;
-        currentGroup = juce::ValueTree("group");
-        valueTree.appendChild(currentGroup, nullptr);
+        startGroup();
+    } else if (token == "<curve>")
+    {
+        currentSection = CURVE;
+        currentCurve = juce::ValueTree("curve");
+        valueTree.appendChild(currentCurve, nullptr);
     }
     else if (token == "<region>")
     {
         currentSection = REGION;
         currentRegion = juce::ValueTree("region");
+        // A region with no <group> above it gets one of its own. The region's opcodes stay on
+        // the region: this used to switch to GROUP, so the first such region's sample, key and
+        // the rest landed on the group, became defaults for every later region in it, and the
+        // region itself came out as an empty <sample/>.
         if(!currentGroup.isValid()) {
-            currentSection = GROUP;
-            currentGroup = juce::ValueTree("group");
-            valueTree.appendChild(currentGroup, nullptr);
+            startGroup();
         }
         currentGroup.appendChild(currentRegion, nullptr);
     } else
@@ -149,6 +197,11 @@ void DSSFZ::pushOpcode(juce::String token) {
     }
     juce::String key = token.substring(0, equalsIndex);
     juce::String value = token.substring(equalsIndex+1).trimEnd();
+
+    if (key.contains("_curvecc")) {
+        auto &users = curveUsers[value.getIntValue()];
+        users.addIfNotAlreadyThere(key);
+    }
     
     if(currentSection == GLOBAL) {
         valueTree.setProperty(key, value, nullptr);
@@ -156,6 +209,10 @@ void DSSFZ::pushOpcode(juce::String token) {
         if (key == "default_path") {
             valueTree.setProperty("default_path", value, nullptr);
         }
+    } else if (currentSection == MASTER) {
+        currentMaster.setProperty(key, value, nullptr);
+    } else if (currentSection == CURVE) {
+        currentCurve.setProperty(key, value, nullptr);
     } else if (currentSection == GROUP) {
         currentGroup.setProperty(key, value, nullptr);
     } else if (currentSection == REGION) {
