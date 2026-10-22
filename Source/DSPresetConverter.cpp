@@ -9,6 +9,9 @@
 */
 
 #include "DSPresetConverter.h"
+#include <algorithm>
+#include <functional>
+#include <map>
 #include "../../../DSHelpers.h"
 
  DSPresetConverter::DSPresetConverter() {
@@ -21,12 +24,30 @@ void DSPresetConverter::logPathChange(const juce::String& updatedPath) const {
     }
 }
 
+// Sets the standard knob bound to an instrument-level envelope stage (addGenericUI) to `value`,
+// widening its range if needed, so the knob starts where the imported instrument is.
+static void setStandardKnobValue(juce::ValueTree preset, const juce::String& parameter, double value) {
+    std::function<void(juce::ValueTree)> visit = [&](juce::ValueTree node) {
+        for (auto child : node) {
+            if (child.hasType("binding") && child.getProperty("parameter").toString() == parameter
+                && child.getProperty("level").toString() == "instrument") {
+                node.setProperty("value", value, nullptr);
+                if (value > (double) node.getProperty("maxValue", value)) node.setProperty("maxValue", value, nullptr);
+                if (value < (double) node.getProperty("minValue", value)) node.setProperty("minValue", value, nullptr);
+            }
+            visit(child);
+        }
+    };
+    visit(preset.getChildWithName("ui"));
+}
+
 void DSPresetConverter::parseDSEXS24(DSEXS24 exs24) {
 
     // Setup the EXS24 data
     juce::Array<DSEXS24Zone> &zones = exs24.getZones();
     juce::Array<DSEXS24Group> &groups = exs24.getGroups();
     juce::Array<DSEXS24Sample> &samples = exs24.getSamples();
+    const DSEXS24Settings &settings = exs24.getSettings();
     valueTree = juce::ValueTree("DecentSampler");
     
     // Add a generic UI
@@ -34,54 +55,90 @@ void DSPresetConverter::parseDSEXS24(DSEXS24 exs24) {
     
     juce::ValueTree groupsVT = juce::ValueTree("groups");
     valueTree.appendChild(groupsVT, nullptr);
-    
-    for (DSEXS24Zone zone : zones) {
-        if(zone.groupIndex < 0) {
-            continue;
-        } else if(zone.groupIndex > 100) {
-            printf("This zone's group index is greater than 100. This converter may not support this file.");
-            continue;
-        }
-        while (zone.groupIndex >= groups.size()) {
-            DSEXS24Group newGroup;
-            newGroup.name = "Couldn't find group index " + juce::String(zone.groupIndex);
-            groups.add(newGroup);
+
+    // Instrument settings (the EXS parameter block)
+    if (settings.volumeDb && *settings.volumeDb != 0) {
+        groupsVT.setProperty("globalVolume", juce::String(*settings.volumeDb) + "dB", nullptr);
+    }
+    const double globalTuning = settings.transpose.value_or(0) + settings.fineTune.value_or(0) / 100.0;
+    if (globalTuning != 0) {
+        groupsVT.setProperty("globalTuning", globalTuning, nullptr);
+    }
+    if (settings.bendUp && *settings.bendUp != 2) {
+        groupsVT.setProperty("pitchBendRange", *settings.bendUp, nullptr);
+    }
+    // The amp envelope, which the standard knobs control
+    const struct { const std::optional<double>& value; const char* attribute; const char* parameter; double scale; } stages[] = {
+        { settings.ampAttackMs, "attack", "ENV_ATTACK", 0.001 },
+        { settings.ampDecayMs, "decay", "ENV_DECAY", 0.001 },
+        { settings.ampSustain, "sustain", "ENV_SUSTAIN", 1.0 },
+        { settings.ampReleaseMs, "release", "ENV_RELEASE", 0.001 },
+    };
+    for (const auto& stage : stages) {
+        if (stage.value) {
+            // three decimals is a millisecond, finer than Logic's own steps
+            const double v = std::round(*stage.value * stage.scale * 1000.0) / 1000.0;
+            groupsVT.setProperty(stage.attribute, juce::String(v, 3), nullptr);
+            setStandardKnobValue(valueTree, stage.parameter, v);
         }
     }
-    
-    int highestSequenceNumber = 0;
+
+    // Zones whose group doesn't exist play ungrouped, as they would have nowhere else to go
+    for (DSEXS24Zone &zone : zones) {
+        if (zone.groupIndex >= groups.size() || zone.groupIndex < -1) {
+            zone.groupIndex = -1;
+        }
+    }
+
+    juce::ValueTree tagsVT("tags");
+    // round robin chain -> (position in the chain, the group as written), numbered once all are known
+    std::map<int, std::vector<std::pair<int, juce::ValueTree>>> chains;
     
     // Iterate through the groups and add their respective samples
     for(int groupIndex = -1; groupIndex < groups.size(); groupIndex++) {
         bool hasSamples = false;
         DSEXS24Group group = (groupIndex >= 0) ? groups[groupIndex] : DSEXS24Group();
         juce::ValueTree dsGroup ("group");
-        // dsGroup.setProperty("attack", "0.001", nullptr);
         if(group.name != "") {
             dsGroup.setProperty("name", group.name, nullptr);
         }
-//        dsGroup.setProperty("_exsGroupIndex", groupIndex, nullptr);
         if(group.pan != 0) {
             dsGroup.setProperty("pan", group.pan, nullptr);
         }
         if(group.volume != 0) {
             dsGroup.setProperty("volume", juce::String(group.volume) + "dB", nullptr);
         }
-        
-        if(group.seqNumber != 0) {
-            dsGroup.setProperty("seqPosition", group.seqNumber, nullptr);
-            if(group.seqNumber > highestSequenceNumber) {
-                highestSequenceNumber = group.seqNumber;
-            }
+        if(group.trigger != 0) {
+            dsGroup.setProperty("trigger", "release", nullptr);
         }
-//        dsGroup.setProperty("_exsSequence", group.exsSequence, nullptr);
+
+        if(group.polyphony > 0) {
+            // a group voice limit becomes a tag with that polyphony
+            const juce::String tag = "exs_group_" + juce::String(groupIndex);
+            dsGroup.setProperty("tags", tag, nullptr);
+            juce::ValueTree tagVT("tag");
+            tagVT.setProperty("name", tag, nullptr);
+            tagVT.setProperty("polyphony", group.polyphony, nullptr);
+            tagsVT.appendChild(tagVT, nullptr);
+        }
         
-        for (DSEXS24Zone zone : zones) {
+        for (const DSEXS24Zone &zone : zones) {
             if (zone.groupIndex == groupIndex) {
                 juce::ValueTree dsSample("sample");
                 
                 int sampleIndex = zone.sampleIndex;
                 if(sampleIndex < 0 || sampleIndex >= samples.size()) {
+                    continue;
+                }
+
+                // the zone's velocity range, narrowed by its group's
+                int loVel = zone.velocityRangeOn ? zone.loVel : 0;
+                int hiVel = zone.velocityRangeOn ? zone.hiVel : 127;
+                if (groupIndex >= 0) {
+                    loVel = juce::jmax(loVel, (int) group.velRangeLow);
+                    hiVel = juce::jmin(hiVel, (int) group.velRangeHigh);
+                }
+                if (loVel > hiVel) {
                     continue;
                 }
                 
@@ -98,8 +155,8 @@ void DSPresetConverter::parseDSEXS24(DSEXS24 exs24) {
                 dsSample.setProperty("rootNote", zone.key, nullptr);
                 dsSample.setProperty("loNote", zone.keyLow, nullptr);
                 dsSample.setProperty("hiNote", zone.keyHigh, nullptr);
-                dsSample.setProperty("loVel", zone.velocityRangeOn ? zone.loVel : 0, nullptr);
-                dsSample.setProperty("hiVel", zone.velocityRangeOn ? zone.hiVel : 127, nullptr);
+                dsSample.setProperty("loVel", loVel, nullptr);
+                dsSample.setProperty("hiVel", hiVel, nullptr);
                 
                 float tuning = (float) zone.coarseTuning + (((float)zone.fineTuning)/100.0f);
                 if(tuning != 0) {
@@ -132,30 +189,35 @@ void DSPresetConverter::parseDSEXS24(DSEXS24 exs24) {
                     dsSample.setProperty("loopCrossfadeMode", zone.loopEqualPower ? "equal_power" : "linear", nullptr);
                 }
                 
-                
                 hasSamples = true;
                 dsGroup.appendChild(dsSample, nullptr);
             }
         }
         if(hasSamples) {
             groupsVT.appendChild(dsGroup, nullptr);
-        }
-    }
-    
-    // Go back through and set seqLength as needed
-    for(juce::ValueTree groupVT : groupsVT) {
-        if(groupVT.hasProperty("seqPosition")) {
-            groupVT.setProperty("seqLength", highestSequenceNumber, nullptr);
-            groupVT.setProperty("seqMode", "round_robin", nullptr);
-        }
-        for(juce::ValueTree sampleVT : groupVT) {
-            if(sampleVT.hasProperty("seqPosition")) {
-                sampleVT.setProperty("seqLength", highestSequenceNumber, nullptr);
-                sampleVT.setProperty("seqMode", "round_robin", nullptr);
+            if (group.seqChain >= 0) {
+                chains[group.seqChain].push_back({ group.seqNumber, dsGroup });
             }
         }
     }
-    
+
+    // Number each round robin over the groups that made it into the preset: a chain member with no
+    // playable zones would otherwise leave a silent step in the cycle
+    for (auto& [chain, members] : chains) {
+        if (members.size() < 2) {
+            continue;
+        }
+        std::sort(members.begin(), members.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+        for (size_t k = 0; k < members.size(); k++) {
+            members[k].second.setProperty("seqMode", "round_robin", nullptr);
+            members[k].second.setProperty("seqPosition", (int) k + 1, nullptr);
+            members[k].second.setProperty("seqLength", (int) members.size(), nullptr);
+        }
+    }
+
+    if (tagsVT.getNumChildren() > 0) {
+        valueTree.appendChild(tagsVT, nullptr);
+    }
 }
 
 // SFZ key opcodes take either a MIDI number or a note name, "c-1" to "g9" with "#" or "b",
@@ -584,63 +646,99 @@ double DSPresetConverter::linearOrDbStringToDb(const juce::String inputString) {
 }
 
 
+// Finds each sample and makes its path absolute. Looks, in order, in the folder the EXS file recorded
+// for it (_exsFilePath), the working directory, "<exs dir>/<instrument name>/", "<exs dir>/Samples/",
+// beside the .exs, and finally by file name anywhere under the folder two levels above the .exs (as
+// Logic's own search for moved samples does). Keeps going past a missing sample; returns false if any
+// were missing.
 bool DSPresetConverter::huntForSamples(juce::File inputDirectory, juce::String sampleSetName) {
     juce::ValueTree groupsValueTree = valueTree.getChildWithName("groups");
     if(groupsValueTree == juce::ValueTree()) {
         return true;
     }
-    auto parseSampleAndGroupProperties = [this](juce::ValueTree &valueTree, juce::File inputDirectory, juce::String sampleSetName) {
-        if(valueTree.hasProperty("path")) {
-            juce::String path = valueTree.getProperty("path").toString();
-            
-            juce::File sampleFile = juce::File::getCurrentWorkingDirectory().getChildFile(path);
-            if(sampleFile.existsAsFile()) {
-                std::cout << "Sample file \"" << path << "\" found." << std::endl;
-                valueTree.setProperty("path", sampleFile.getFullPathName(), nullptr);
-                return true;
-            }
-            
-            sampleFile = inputDirectory.getChildFile(sampleSetName).getChildFile(path);
-            if(sampleFile.existsAsFile()) {
-//                valueTree.setProperty("path", sampleFile.getRelativePathFrom(inputDirectory), nullptr);
-                valueTree.setProperty("path", sampleFile.getFullPathName(), nullptr);
-                logPathChange(valueTree.getProperty("path").toString());
-                return true;
-            }
-            
-            sampleFile = inputDirectory.getChildFile("Samples").getChildFile(path);
-            if(sampleFile.existsAsFile()) {
-//                valueTree.setProperty("path", sampleFile.getRelativePathFrom(inputDirectory), nullptr);
-                valueTree.setProperty("path", sampleFile.getFullPathName(), nullptr);
-                logPathChange(valueTree.getProperty("path").toString());
-                return true;
-            }
-    
-            std::cerr << "Sample file \"" << path << "\" not found." << std::endl;
-            return false;
+
+    // name -> file under the search root, built on first use
+    std::map<juce::String, juce::File> index;
+    bool indexBuilt = false;
+    const auto findByName = [&](const juce::String& fileName) -> juce::File {
+        if (!indexBuilt) {
+            indexBuilt = true;
+            const juce::File root = inputDirectory.getParentDirectory().getParentDirectory();
+            constexpr int maxDepth = 6;
+            constexpr size_t maxFiles = 200000;   // never index a whole drive
+            std::function<void(const juce::File&, int)> walk = [&](const juce::File& dir, int depth) {
+                juce::Array<juce::File> subdirs;
+                for (const auto& entry : juce::RangedDirectoryIterator(dir, false, "*", juce::File::findFilesAndDirectories)) {
+                    if (index.size() >= maxFiles) {
+                        return;
+                    }
+                    if (entry.isDirectory()) {
+                        subdirs.add(entry.getFile());
+                    } else {
+                        index.emplace(entry.getFile().getFileName().toLowerCase(), entry.getFile());
+                    }
+                }
+                if (depth < maxDepth) {
+                    for (const auto& d : subdirs) {
+                        walk(d, depth + 1);
+                    }
+                }
+            };
+            walk(root, 0);
         }
-        return true;
+        auto it = index.find(fileName.toLowerCase());
+        return it != index.end() ? it->second : juce::File();
     };
 
-    parseSampleAndGroupProperties(groupsValueTree, inputDirectory, sampleSetName);
-    // Iterate through the groups and add their samples
-        for (auto groupValueTree : groupsValueTree) {
-            if(!groupValueTree.hasType("group")) {
-                continue;
-            }
-            parseSampleAndGroupProperties(groupValueTree, inputDirectory, sampleSetName);
-            
-            for (auto sampleValueTree : groupValueTree) {
-                if(!sampleValueTree.hasType(juce::Identifier("sample"))) {
-                    continue;
-                }
-                if(!parseSampleAndGroupProperties(sampleValueTree, inputDirectory, sampleSetName)) {
-                    std::cerr << "Sample file \"" << sampleValueTree.getProperty("path").toString() << "\" not found." << std::endl;
-                    return false;
-                }
+    bool allFound = true;
+    auto parseSampleAndGroupProperties = [&](juce::ValueTree &vt) {
+        if(!vt.hasProperty("path")) {
+            return;
+        }
+        const juce::String path = vt.getProperty("path").toString();
+        const juce::String recordedFolder = vt.getProperty("_exsFilePath").toString();
+
+        juce::Array<juce::File> candidates;
+        if (juce::File::isAbsolutePath(recordedFolder)) {
+            candidates.add(juce::File(recordedFolder).getChildFile(path));
+        }
+        candidates.add(juce::File::getCurrentWorkingDirectory().getChildFile(path));
+        candidates.add(inputDirectory.getChildFile(sampleSetName).getChildFile(path));
+        candidates.add(inputDirectory.getChildFile("Samples").getChildFile(path));
+        candidates.add(inputDirectory.getChildFile(path));
+
+        for (const auto& candidate : candidates) {
+            if (candidate.existsAsFile()) {
+                vt.setProperty("path", candidate.getFullPathName(), nullptr);
+                logPathChange(vt.getProperty("path").toString());
+                return;
             }
         }
-    return true;
+
+        const juce::File found = findByName(juce::File::createFileWithoutCheckingPath(path).getFileName());
+        if (found != juce::File()) {
+            vt.setProperty("path", found.getFullPathName(), nullptr);
+            logPathChange(vt.getProperty("path").toString());
+            return;
+        }
+
+        std::cerr << "Sample file \"" << path << "\" not found." << std::endl;
+        allFound = false;
+    };
+
+    parseSampleAndGroupProperties(groupsValueTree);
+    for (auto groupValueTree : groupsValueTree) {
+        if(!groupValueTree.hasType("group")) {
+            continue;
+        }
+        parseSampleAndGroupProperties(groupValueTree);
+        for (auto sampleValueTree : groupValueTree) {
+            if(sampleValueTree.hasType(juce::Identifier("sample"))) {
+                parseSampleAndGroupProperties(sampleValueTree);
+            }
+        }
+    }
+    return allFound;
 }
 
 // This function needs to do more than just copy samples to the new directory, it needs to
@@ -1139,14 +1237,15 @@ bool DSPresetConverter::convertEXSLoopCrossfadePoints() {
         }
         juce::String path = valueTree.getProperty("path").toString();
         
-        juce::File sampleFile = juce::File(path);
-        if(!sampleFile.existsAsFile()) {
-            std::cerr << "Sample file \"" << path << "\" not found." << std::endl;
-            return false;
+        // a sample that wasn't found, or can't be read, keeps no crossfade rather than stopping the import
+        if(!juce::File::isAbsolutePath(path) || !juce::File(path).existsAsFile()) {
+            return true;
         }
-        
-        std::unique_ptr<juce::AudioFormatReader> reader (audioFormatManager.createReaderFor (sampleFile));
-        int sourceSampleRate = reader->sampleRate;
+        std::unique_ptr<juce::AudioFormatReader> reader (audioFormatManager.createReaderFor (juce::File(path)));
+        if (reader == nullptr) {
+            return true;
+        }
+        const double sourceSampleRate = reader->sampleRate;
         
         valueTree.setProperty("loopCrossfade", (int) ((float) loopCrossfadeMilliseconds * 0.001 * sourceSampleRate), nullptr);
         
