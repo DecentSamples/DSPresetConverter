@@ -374,6 +374,29 @@ public:
                 float attenuationDb = static_cast<float>(getSignedAmount(mergedPreset, 48) + getSignedAmount(mergedInst, 48)) / 10.0f;
                 region.volumeDb = -attenuationDb;
 
+                // Volume envelope (generators 33-38). An instrument value is absolute and a preset value
+                // is added to it; only what the file sets is imported, so a file without an envelope keeps
+                // Decent Sampler's defaults instead of SF2's 1 ms release.
+                auto envTime = [&] (int oper) -> std::optional<float> {
+                    if (!hasGen(mergedPreset, oper) && !hasGen(mergedInst, oper)) {
+                        return std::nullopt;
+                    }
+                    const int timecents = (hasGen(mergedInst, oper) ? getSignedAmount(mergedInst, oper) : -12000)
+                                        + getSignedAmount(mergedPreset, oper);
+                    const float seconds = std::pow(2.0f, static_cast<float>(timecents) / 1200.0f);
+                    return seconds < 0.002f ? 0.0f : juce::jmin(seconds, 100.0f);
+                };
+                region.envDelay = envTime(33);
+                region.envAttack = envTime(34);
+                region.envHold = envTime(35);
+                region.envDecay = envTime(36);
+                region.envRelease = envTime(38);
+                if (hasGen(mergedPreset, 37) || hasGen(mergedInst, 37)) {
+                    // centibels of attenuation below full level
+                    const int centibels = juce::jlimit(0, 1440, getSignedAmount(mergedInst, 37) + getSignedAmount(mergedPreset, 37));
+                    region.envSustain = std::pow(10.0f, -static_cast<float>(centibels) / 200.0f);
+                }
+
                 if (hasGen(mergedInst, 56) && getSignedAmount(mergedInst, 56) == 0) {
                     region.pitchKeyTrack = false;
                 }
