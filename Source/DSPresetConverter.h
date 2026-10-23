@@ -11,6 +11,7 @@
 #pragma once
 
 #include "DSEXS24.h"
+#include <optional>
 
 struct DSSF2Region {
   juce::String name;
@@ -30,6 +31,8 @@ struct DSSF2Region {
   int loopStart = 0;
   int loopEnd = 0;
   int seqPosition = 0;
+  // Volume envelope, only where the file sets it: times in seconds, sustain as a level (0000583)
+  std::optional<float> envDelay, envAttack, envHold, envDecay, envSustain, envRelease;
 };
 
 struct DSSF2Preset {

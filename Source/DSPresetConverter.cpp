@@ -382,6 +382,13 @@ void DSPresetConverter::parseDSSF2Preset(const DSSF2Preset& preset) {
             dsSample.setProperty("loopEnd", region.loopEnd, nullptr);
         }
 
+        if (region.envDelay)   dsSample.setProperty("ampEnvDelay", *region.envDelay, nullptr);
+        if (region.envAttack)  dsSample.setProperty("attack", *region.envAttack, nullptr);
+        if (region.envHold)    dsSample.setProperty("ampEnvHold", *region.envHold, nullptr);
+        if (region.envDecay)   dsSample.setProperty("decay", *region.envDecay, nullptr);
+        if (region.envSustain) dsSample.setProperty("sustain", *region.envSustain, nullptr);
+        if (region.envRelease) dsSample.setProperty("release", *region.envRelease, nullptr);
+
         if (region.seqPosition > 0) {
             dsSample.setProperty("seqMode", "round_robin", nullptr);
             dsSample.setProperty("seqPosition", region.seqPosition, nullptr);
@@ -421,6 +428,10 @@ void DSPresetConverter::translateSFZRegionProperties(juce::ValueTree sfzRegion, 
             dsEntity.setProperty("sustain", value, nullptr);
         } else if(key == "ampeg_decay") {
             dsEntity.setProperty("decay", value, nullptr);
+        } else if(key == "ampeg_delay") {
+            dsEntity.setProperty("ampEnvDelay", value, nullptr);
+        } else if(key == "ampeg_hold") {
+            dsEntity.setProperty("ampEnvHold", value, nullptr);
         } else if(key == "group") {
             dsEntity.setProperty("tags", "voice-group-" + value.toString(), nullptr);
         } else if(key == "end") {
@@ -561,17 +572,30 @@ juce::String DSPresetConverter::getSFZ() {
                 sfzFile = sfzFile + "amp_veltrack=" + juce::String((int)(value*100)) + " ";
             }
         }
-        if(valueTree.hasProperty("attack")) {
-            sfzFile = sfzFile + "ampeg_attack=" + valueTree.getProperty("attack").toString() + " ";
+        // 0000583: ampEnvAttack and the like are other spellings of attack and the like, and win
+        auto envelope = [&valueTree] (const char* preferred, const char* legacy) {
+            return valueTree.hasProperty(preferred) ? valueTree.getProperty(preferred) : valueTree.getProperty(legacy);
+        };
+        auto hasEnvelope = [&valueTree] (const char* preferred, const char* legacy) {
+            return valueTree.hasProperty(preferred) || valueTree.hasProperty(legacy);
+        };
+        if(valueTree.hasProperty("ampEnvDelay")) {
+            sfzFile = sfzFile + "ampeg_delay=" + valueTree.getProperty("ampEnvDelay").toString() + " ";
         }
-        if(valueTree.hasProperty("release")) {
-            sfzFile = sfzFile + "ampeg_release=" + valueTree.getProperty("release").toString() + " ";
+        if(hasEnvelope("ampEnvAttack", "attack")) {
+            sfzFile = sfzFile + "ampeg_attack=" + envelope("ampEnvAttack", "attack").toString() + " ";
         }
-        if(valueTree.hasProperty("sustain")) {
-            sfzFile = sfzFile + "ampeg_sustain=" + valueTree.getProperty("sustain").toString() + " ";
+        if(valueTree.hasProperty("ampEnvHold")) {
+            sfzFile = sfzFile + "ampeg_hold=" + valueTree.getProperty("ampEnvHold").toString() + " ";
         }
-        if(valueTree.hasProperty("decay")) {
-            sfzFile = sfzFile + "ampeg_decay=" + valueTree.getProperty("decay").toString() + " ";
+        if(hasEnvelope("ampEnvRelease", "release")) {
+            sfzFile = sfzFile + "ampeg_release=" + envelope("ampEnvRelease", "release").toString() + " ";
+        }
+        if(hasEnvelope("ampEnvSustain", "sustain")) {
+            sfzFile = sfzFile + "ampeg_sustain=" + envelope("ampEnvSustain", "sustain").toString() + " ";
+        }
+        if(hasEnvelope("ampEnvDecay", "decay")) {
+            sfzFile = sfzFile + "ampeg_decay=" + envelope("ampEnvDecay", "decay").toString() + " ";
         }
         if(valueTree.hasProperty("seqPosition")) {
             sfzFile = sfzFile + "seq_position=" + valueTree.getProperty("seqPosition").toString() + " ";
