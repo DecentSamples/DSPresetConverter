@@ -425,7 +425,8 @@ void DSPresetConverter::translateSFZRegionProperties(juce::ValueTree sfzRegion, 
         } else if(key == "ampeg_release") {
             dsEntity.setProperty("release", value, nullptr);
         } else if(key == "ampeg_sustain") {
-            dsEntity.setProperty("sustain", value, nullptr);
+            // SFZ gives the sustain level as a percentage; Decent Sampler's is 0 to 1
+            dsEntity.setProperty("sustain", juce::jlimit(0.0, 1.0, ((double)value)/100.0), nullptr);
         } else if(key == "ampeg_decay") {
             dsEntity.setProperty("decay", value, nullptr);
         } else if(key == "ampeg_delay") {
@@ -592,7 +593,7 @@ juce::String DSPresetConverter::getSFZ() {
             sfzFile = sfzFile + "ampeg_release=" + envelope("ampEnvRelease", "release").toString() + " ";
         }
         if(hasEnvelope("ampEnvSustain", "sustain")) {
-            sfzFile = sfzFile + "ampeg_sustain=" + envelope("ampEnvSustain", "sustain").toString() + " ";
+            sfzFile = sfzFile + "ampeg_sustain=" + juce::String(std::round(((double) envelope("ampEnvSustain", "sustain")) * 1000000.0) / 10000.0) + " ";
         }
         if(hasEnvelope("ampEnvDecay", "decay")) {
             sfzFile = sfzFile + "ampeg_decay=" + envelope("ampEnvDecay", "decay").toString() + " ";
