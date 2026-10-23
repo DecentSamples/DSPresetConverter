@@ -25,7 +25,11 @@ namespace
     // Instrument parameter ids, from David's controlled Logic saves
     constexpr int pBendUp = 3, pBendDown = 4, pVoices = 5, pVolume = 7, pTranspose = 14, pFineTune = 15,
                   pGlide = 20, pFilterResonance = 29, pFilterCutoff = 30, pFilterOn = 44, pFilterType = 243,
-                  pAmpSustain = 81, pAmpAttackHigh = 83, pAmpDecay = 84, pAmpRelease = 85;
+                  pAmpSustain = 81, pAmpAttackHigh = 83, pAmpDecay = 84, pAmpRelease = 85, pAmpHold = 56,
+                  // from the second list (16-bit ids)
+                  pAmpEnvelopeType = 363, pAmpDelay = 365, pAmpAttackCurve = 405;
+    // pAmpEnvelopeType values
+    constexpr int envelopeAD = 0, envelopeAR = 1, envelopeAHDSR = 3, envelopeDADSR = 4, envelopeDAHDSR = 5;
 
     struct Corrupt {};
 
@@ -49,11 +53,13 @@ namespace
 
         int i32 (size_t off) const { return (int) u32 (off); }
 
-        int i16 (size_t off) const
+        int u16 (size_t off) const
         {
             need (off, 2);
-            return (int) (juce::int16) (bigEndian ? juce::ByteOrder::bigEndianShort (p + off) : juce::ByteOrder::littleEndianShort (p + off));
+            return (int) (bigEndian ? juce::ByteOrder::bigEndianShort (p + off) : juce::ByteOrder::littleEndianShort (p + off));
         }
+
+        int i16 (size_t off) const { return (int) (juce::int16) u16 (off); }
 
         float f32 (size_t off) const
         {
@@ -221,6 +227,21 @@ bool DSEXS24::loadExsData(const void* rawData, size_t size) {
                 for (size_t k = 0; k < n; ++k) {
                     parameters[r.u8 (recordHeader + 4 + k)] = r.i16 (recordHeader + 4 + n + 2 * k);
                 }
+                // 1108-byte records go on with a second list: u32 count, then count (u16 id, i16 value)
+                // pairs. Its ids are 256 and up, so they can't collide with the first list's. One that
+                // doesn't fit is ignored.
+                const size_t second = recordHeader + 4 + 3 * n;
+                if (second + 4 <= r.n) {
+                    const size_t n2 = r.u32 (second);
+                    if (n2 <= (r.n - second - 4) / 4) {
+                        for (size_t k = 0; k < n2; ++k) {
+                            const int id = r.u16 (second + 4 + 4 * k);
+                            if (id >= 256) {
+                                parameters[id] = r.i16 (second + 6 + 4 * k);
+                            }
+                        }
+                    }
+                }
             }
 
             i += recordHeader + bodySize;
@@ -251,6 +272,22 @@ bool DSEXS24::loadExsData(const void* rawData, size_t size) {
     if (auto v = get (pAmpDecay)) settings.ampDecayMs = envelopeMs (*v);
     if (auto v = get (pAmpSustain)) settings.ampSustain = sustainLevel (*v);
     if (auto v = get (pAmpRelease)) settings.ampReleaseMs = envelopeMs (*v);
+    settings.ampEnvelopeType = get (pAmpEnvelopeType);
+    // A stage's time stays stored after the type loses that stage, so the type decides
+    const int envelopeType = settings.ampEnvelopeType.value_or (0);
+    if (auto v = get (pAmpDelay); v && (envelopeType == envelopeDADSR || envelopeType == envelopeDAHDSR))
+        settings.ampDelayMs = envelopeMs (*v);
+    if (auto v = get (pAmpHold); v && (envelopeType == envelopeAHDSR || envelopeType == envelopeDAHDSR))
+        settings.ampHoldMs = envelopeMs (*v);
+    // AR holds full level until the key is let go; AD falls to silence whatever the key does
+    if (settings.ampEnvelopeType == envelopeAR) {
+        settings.ampDecayMs.reset();
+        settings.ampSustain = 1.0;
+    } else if (settings.ampEnvelopeType == envelopeAD) {
+        settings.ampSustain = 0.0;
+        settings.ampReleaseMs.reset();
+    }
+    settings.ampAttackCurve = get (pAmpAttackCurve);
     if (auto v = get (pFilterOn)) settings.filterOn = *v != 0;
     if (auto v = get (pFilterCutoff)) settings.filterCutoff = juce::jlimit (0, 1000, *v) / 1000.0;
     if (auto v = get (pFilterResonance)) settings.filterResonance = juce::jlimit (0, 1000, *v) / 1000.0;

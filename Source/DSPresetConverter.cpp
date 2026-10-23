@@ -67,12 +67,14 @@ void DSPresetConverter::parseDSEXS24(DSEXS24 exs24) {
     if (settings.bendUp && *settings.bendUp != 2) {
         groupsVT.setProperty("pitchBendRange", *settings.bendUp, nullptr);
     }
-    // The amp envelope, which the standard knobs control
+    // The amp envelope, which the standard knobs control. An AD envelope keeps falling at its decay rate
+    // when the key is let go, which a release as long as the decay is closest to.
+    const std::optional<double> ampReleaseMs = (settings.ampEnvelopeType == 0) ? settings.ampDecayMs : settings.ampReleaseMs;
     const struct { const std::optional<double>& value; const char* attribute; const char* parameter; double scale; } stages[] = {
         { settings.ampAttackMs, "attack", "ENV_ATTACK", 0.001 },
         { settings.ampDecayMs, "decay", "ENV_DECAY", 0.001 },
         { settings.ampSustain, "sustain", "ENV_SUSTAIN", 1.0 },
-        { settings.ampReleaseMs, "release", "ENV_RELEASE", 0.001 },
+        { ampReleaseMs, "release", "ENV_RELEASE", 0.001 },
     };
     for (const auto& stage : stages) {
         if (stage.value) {
@@ -81,6 +83,13 @@ void DSPresetConverter::parseDSEXS24(DSEXS24 exs24) {
             groupsVT.setProperty(stage.attribute, juce::String(v, 3), nullptr);
             setStandardKnobValue(valueTree, stage.parameter, v);
         }
+    }
+    // Delay and hold have no standard knob (0000583)
+    if (settings.ampDelayMs && *settings.ampDelayMs > 0) {
+        groupsVT.setProperty("ampEnvDelay", juce::String(std::round(*settings.ampDelayMs) / 1000.0, 3), nullptr);
+    }
+    if (settings.ampHoldMs && *settings.ampHoldMs > 0) {
+        groupsVT.setProperty("ampEnvHold", juce::String(std::round(*settings.ampHoldMs) / 1000.0, 3), nullptr);
     }
 
     // Zones whose group doesn't exist play ungrouped, as they would have nowhere else to go
