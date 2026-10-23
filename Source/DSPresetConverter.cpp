@@ -84,11 +84,9 @@ void DSPresetConverter::parseDSEXS24(DSEXS24 exs24) {
             setStandardKnobValue(valueTree, stage.parameter, v);
         }
     }
-    // Logic's -99 rises fast and levels off, as Decent Sampler's -100 does. Only a stored curve is
-    // used: Logic's default when none is stored isn't known, and Decent Sampler's is -100.
-    if (settings.ampAttackCurve) {
-        groupsVT.setProperty("attackCurve", juce::jlimit(-100, 100, juce::roundToInt(*settings.ampAttackCurve * 100.0 / 99.0)), nullptr);
-    }
+    // Logic's -99 rises fast and levels off, as Decent Sampler's -100 does. With none stored, Logic's
+    // attack is a straight line (0), where Decent Sampler's default is -100, so it is always written.
+    groupsVT.setProperty("attackCurve", juce::jlimit(-100, 100, juce::roundToInt(settings.ampAttackCurve.value_or(0) * 100.0 / 99.0)), nullptr);
     // Delay and hold have no standard knob (0000583)
     if (settings.ampDelayMs && *settings.ampDelayMs > 0) {
         groupsVT.setProperty("ampEnvDelay", juce::String(std::round(*settings.ampDelayMs) / 1000.0, 3), nullptr);
