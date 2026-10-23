@@ -82,7 +82,7 @@ struct DSEXS24Settings {
     std::optional<int> volumeDb, transpose, fineTune, voices, bendUp, bendDown, glideRaw, filterType;
     std::optional<double> ampAttackMs, ampDecayMs, ampSustain, ampReleaseMs, filterCutoff, filterResonance;
     std::optional<int> ampEnvelopeType;                 // 0 AD, 1 AR, 2 ADSR, 3 AHDSR, 4 DADSR, 5 DAHDSR
-    std::optional<int> ampAttackCurve;                  // -99..99; which way the sign bends is not yet known
+    std::optional<int> ampAttackCurve;                  // -99..99; -99 rises fast and levels off
     std::optional<double> ampDelayMs, ampHoldMs;        // only when the type has that stage
     std::optional<bool> filterOn;
 };
