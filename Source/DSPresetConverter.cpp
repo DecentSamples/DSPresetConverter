@@ -451,6 +451,9 @@ void DSPresetConverter::translateSFZRegionProperties(juce::ValueTree sfzRegion, 
             dsEntity.setProperty("end", value, nullptr);
         } else if(key == "hikey") {
             dsEntity.setProperty("hiNote", sfzKeyValue(value), nullptr);
+        } else if(key == "hichan") {
+            // 0000420: SFZ and Decent Sampler both number channels 1-16
+            dsEntity.setProperty("hiChannel", value, nullptr);
         } else if(key == "hivel") {
             dsEntity.setProperty("hiVel", value, nullptr);
         } else if(key == "key") {
@@ -459,6 +462,8 @@ void DSPresetConverter::translateSFZRegionProperties(juce::ValueTree sfzRegion, 
             dsEntity.setProperty("hiNote", sfzKeyValue(value), nullptr);
         } else if(key == "lokey") {
             dsEntity.setProperty("loNote", sfzKeyValue(value), nullptr);
+        } else if(key == "lochan") {
+            dsEntity.setProperty("loChannel", value, nullptr);
         } else if(key == "lorand") {
             dsEntity.setProperty("_lorand", (double) value, nullptr);
         } else if(key == "hirand") {
@@ -558,6 +563,12 @@ juce::String DSPresetConverter::getSFZ() {
         }
         if(valueTree.hasProperty("hiVel") && valueTree.getProperty("hiVel").toString() != "127") {
             sfzFile = sfzFile + "hivel=" + valueTree.getProperty("hiVel").toString() + " ";
+        }
+        if(valueTree.hasProperty("loChannel") && valueTree.getProperty("loChannel").toString() != "1") {
+            sfzFile = sfzFile + "lochan=" + valueTree.getProperty("loChannel").toString() + " ";
+        }
+        if(valueTree.hasProperty("hiChannel") && valueTree.getProperty("hiChannel").toString() != "16") {
+            sfzFile = sfzFile + "hichan=" + valueTree.getProperty("hiChannel").toString() + " ";
         }
         if(valueTree.hasProperty("start") && valueTree.getProperty("start").toString() != "0") {
             sfzFile = sfzFile + "offset=" + valueTree.getProperty("start").toString() + " ";
