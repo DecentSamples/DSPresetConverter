@@ -60,7 +60,13 @@ void DSPresetConverter::parseDSEXS24(DSEXS24 exs24) {
     if (settings.volumeDb && *settings.volumeDb != 0) {
         groupsVT.setProperty("globalVolume", juce::String(*settings.volumeDb) + "dB", nullptr);
     }
-    const double globalTuning = settings.transpose.value_or(0) + settings.fineTune.value_or(0) / 100.0;
+    // Logic's Transpose moves the zones as well as the pitch (a key plays the zone that many keys
+    // away), which is Decent Sampler's globalTranspose. Fine Tune is a pitch change only (0000419).
+    const int globalTranspose = juce::jlimit(-48, 48, settings.transpose.value_or(0));
+    if (globalTranspose != 0) {
+        groupsVT.setProperty("globalTranspose", globalTranspose, nullptr);
+    }
+    const double globalTuning = settings.fineTune.value_or(0) / 100.0;
     if (globalTuning != 0) {
         groupsVT.setProperty("globalTuning", globalTuning, nullptr);
     }
