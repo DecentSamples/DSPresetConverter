@@ -41,6 +41,22 @@ static void setStandardKnobValue(juce::ValueTree preset, const juce::String& par
     visit(preset.getChildWithName("ui"));
 }
 
+// Every imported preset asks for 1.41.0 (globalTranspose, 0000419), or more if something already
+// asked for a later version.
+static void setImportMinVersion(juce::ValueTree preset) {
+    static const char* const importMinVersion = "1.41.0";
+    const auto existing = juce::StringArray::fromTokens(preset.getProperty("minVersion").toString(), ".", {});
+    const auto wanted = juce::StringArray::fromTokens(importMinVersion, ".", {});
+    for (int i = 0; i < 3; ++i) {
+        const int a = existing[i].getIntValue(), b = wanted[i].getIntValue();
+        if (a != b) {
+            if (a > b) return;
+            break;
+        }
+    }
+    preset.setProperty("minVersion", importMinVersion, nullptr);
+}
+
 void DSPresetConverter::parseDSEXS24(DSEXS24 exs24) {
 
     // Setup the EXS24 data
@@ -49,6 +65,7 @@ void DSPresetConverter::parseDSEXS24(DSEXS24 exs24) {
     juce::Array<DSEXS24Sample> &samples = exs24.getSamples();
     const DSEXS24Settings &settings = exs24.getSettings();
     valueTree = juce::ValueTree("DecentSampler");
+    setImportMinVersion(valueTree);
     
     // Add a generic UI
     addGenericUI();
@@ -60,7 +77,13 @@ void DSPresetConverter::parseDSEXS24(DSEXS24 exs24) {
     if (settings.volumeDb && *settings.volumeDb != 0) {
         groupsVT.setProperty("globalVolume", juce::String(*settings.volumeDb) + "dB", nullptr);
     }
-    const double globalTuning = settings.transpose.value_or(0) + settings.fineTune.value_or(0) / 100.0;
+    // Logic's Transpose moves the zones as well as the pitch (a key plays the zone that many keys
+    // away), which is Decent Sampler's globalTranspose. Fine Tune is a pitch change only (0000419).
+    const int globalTranspose = juce::jlimit(-48, 48, settings.transpose.value_or(0));
+    if (globalTranspose != 0) {
+        groupsVT.setProperty("globalTranspose", globalTranspose, nullptr);
+    }
+    const double globalTuning = settings.fineTune.value_or(0) / 100.0;
     if (globalTuning != 0) {
         groupsVT.setProperty("globalTuning", globalTuning, nullptr);
     }
@@ -300,6 +323,7 @@ static void translateSFZRandomRoundRobins(juce::ValueTree &dsGroup) {
 
 void DSPresetConverter::parseSFZValueTree(juce::ValueTree sfz) {
     valueTree = juce::ValueTree("DecentSampler");
+    setImportMinVersion(valueTree);
     
     // Add a generic UI
     addGenericUI();
@@ -337,6 +361,7 @@ void DSPresetConverter::parseSFZValueTree(juce::ValueTree sfz) {
 
 void DSPresetConverter::parseDSSF2Preset(const DSSF2Preset& preset) {
     valueTree = juce::ValueTree("DecentSampler");
+    setImportMinVersion(valueTree);
 
     // Add a generic UI for imported presets.
     addGenericUI();
